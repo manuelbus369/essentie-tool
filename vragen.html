@@ -1,1 +1,198 @@
-<!-- aangepaste vragen.html inhoud -->
+
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Essentie Tool — Vragen</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>Vragenlijst</h1>
+    <div class="badge" id="sessionBadge"></div>
+
+    <div class="card">
+      <div id="groupTitle" class="muted" style="margin-bottom:6px"></div>
+      <h2 id="questionText">Laden…</h2>
+      <div id="helpText" class="muted" style="margin-bottom:10px"></div>
+      <textarea id="answer" rows="6" placeholder="Typ je antwoord…"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button id="prev">Vorige</button>
+        <button id="save">Opslaan</button>
+        <button id="next">Volgende</button>
+      </div>
+      <div id="status" class="status muted"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {{ supabase }} from "./supabaseClient.js"
+
+    const params = new URLSearchParams(location.search)
+    const sessionId = params.get('session')
+    const sessionBadge = document.getElementById('sessionBadge')
+
+    const groupTitle = document.getElementById('groupTitle')
+    const questionText = document.getElementById('questionText')
+    const helpText = document.getElementById('helpText')
+    const answerEl = document.getElementById('answer')
+    const prevBtn = document.getElementById('prev')
+    const nextBtn = document.getElementById('next')
+    const saveBtn = document.getElementById('save')
+    const status = document.getElementById('status')
+
+    let orderedQuestions = []   // [{{id, _groupTitle, question, help_text, position}}]
+    let idx = 0
+
+    function setStatus(msg) {{ status.textContent = msg || '' }}
+
+    function setUI(q) {{
+      questionText.textContent = q.question
+      groupTitle.textContent = q._groupTitle || ''
+      helpText.textContent = q.help_text || ''
+    }}
+
+    async function ensureLoggedIn() {{
+      const {{ data: {{ user }} }} = await supabase.auth.getUser()
+      if (!user) {{
+        alert('Je bent niet ingelogd.')
+        location.href = './index.html'
+        return null
+      }}
+      return user
+    }}
+
+    async function fetchSession() {{
+      const {{ data, error }} = await supabase
+        .from('sessions')
+        .select('id,title,set_id,created_at')
+        .eq('id', sessionId)
+        .single()
+      if (error) throw error
+      sessionBadge.textContent = data.title ? `Sessie: ${{data.title}}` : `Sessie: ${{data.id}}`
+      return data
+    }}
+
+    async function fetchGroups(setId) {{
+      const {{ data, error }} = await supabase
+        .from('question_groups')
+        .select('id,title,step_number,position')
+        .eq('is_active', true)
+        .eq('set_id', setId)
+        .order('step_number', {{ ascending: true }})
+        .order('position', {{ ascending: true }})
+      if (error) throw error
+      return data
+    }}
+
+    async function fetchQuestionsForGroups(groupIds) {{
+      const {{ data, error }} = await supabase
+        .from('questions')
+        .select('id, group_id, question, help_text, position')
+        .in('group_id', groupIds)
+        .eq('is_active', true)
+        .order('position', {{ ascending: true }})
+      if (error) throw error
+      return data
+    }}
+
+    async function loadAnswer(questionId, userId) {{
+      const {{ data, error }} = await supabase
+        .from('answers')
+        .select('id, answer')
+        .eq('session_id', sessionId)
+        .eq('question_id', questionId)
+        .eq('user_id', userId)
+        .maybeSingle?.() ?? await supabase
+        .from('answers')
+        .select('id, answer')
+        .eq('session_id', sessionId).eq('question_id', questionId).eq('user_id', userId).limit(1)
+      const row = (data && (Array.isArray(data)?data[0]:data)) || null
+      return row
+    }}
+
+    async function saveAnswer(questionId, text, userId) {{
+      const existing = await loadAnswer(questionId, userId)
+      if (existing?.id) {{
+        const {{ error }} = await supabase
+          .from('answers')
+          .update({{ answer: text }})
+          .eq('id', existing.id)
+        if (error) throw error
+      }} else {{
+        const {{ error }} = await supabase
+          .from('answers')
+          .insert({{ session_id: sessionId, question_id: questionId, user_id: userId, answer: text }})
+        if (error) throw error
+      }}
+    }}
+
+    async function bootstrap() {{
+      const user = await ensureLoggedIn()
+      if (!user) return
+      if (!sessionId) {{ alert('Geen session id.'); location.href = './index.html'; return }}
+
+      const session = await fetchSession()
+      const groups = await fetchGroups(session.set_id)
+      const groupMap = Object.fromEntries(groups.map(g => [g.id, g.title]))
+      const questions = await fetchQuestionsForGroups(groups.map(g => g.id))
+
+      // Maak geordende lijst per group-volgorde
+      const grouped = {{}}
+      for (const g of groups) grouped[g.id] = []
+      for (const q of questions) grouped[q.group_id].push(q)
+      orderedQuestions = []
+      for (const g of groups) {{
+        for (const q of grouped[g.id]) {{
+          orderedQuestions.push({{ ...q, _groupTitle: groupMap[g.id] }})
+        }}
+      }}
+
+      if (!orderedQuestions.length) {{
+        questionText.textContent = 'Geen vragen gevonden.'
+        return
+      }}
+
+      idx = 0
+      setUI(orderedQuestions[idx])
+      const existing = await loadAnswer(orderedQuestions[idx].id, user.id)
+      answerEl.value = existing?.answer || ''
+      prevBtn.disabled = idx === 0
+    }}
+
+    async function goto(offset) {{
+      const {{ data: {{ user }} }} = await supabase.auth.getUser()
+      if (!user) return
+      try {{
+        await saveAnswer(orderedQuestions[idx].id, answerEl.value, user.id)
+        setStatus('Opgeslagen ✅')
+      }} catch (e) {{
+        setStatus('Opslaan faalde: ' + (e.message || e))
+        return
+      }}
+      idx = Math.min(Math.max(idx + offset, 0), orderedQuestions.length - 1)
+      setUI(orderedQuestions[idx])
+      const existing = await loadAnswer(orderedQuestions[idx].id, user.id)
+      answerEl.value = existing?.answer || ''
+      prevBtn.disabled = idx === 0
+      window.scrollTo({{ top: 0, behavior: 'smooth' }})
+    }}
+
+    saveBtn.onclick = async () => {{
+      const {{ data: {{ user }} }} = await supabase.auth.getUser()
+      if (!user) return
+      try {{
+        await saveAnswer(orderedQuestions[idx].id, answerEl.value, user.id)
+        setStatus('Opgeslagen ✅')
+      }} catch (e) {{
+        setStatus('Opslaan faalde: ' + (e.message || e))
+      }}
+    }}
+    prevBtn.onclick = () => goto(-1)
+    nextBtn.onclick = () => goto(1)
+
+    bootstrap()
+  </script>
+</body>
+</html>
