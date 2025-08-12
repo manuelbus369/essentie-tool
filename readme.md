@@ -17,3 +17,6 @@ Use this tiny static page to create your first user in your Supabase project.
 - Click the link in your inbox
 - Refresh the page — you should see “Logged in as <email>”
 - In Supabase Dashboard → Authentication → Users: your user should now appear
+
+
+Test update: deze regel is toegevoegd door GPT.
